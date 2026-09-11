@@ -53,6 +53,54 @@ def load_balance_sheets():
     return m
 
 
+def _fred(sid):
+    df = pd.read_csv(CACHE / f"fred_{sid}.csv", na_values=["."],
+                     parse_dates=["observation_date"])
+    return df.set_index("observation_date").iloc[:, 0]
+
+
+def load_stance_inputs():
+    """Reserves, IORB/EFFR, proxy funds rate, NFCI (US); CPI YoY and
+    front-end yields (all 5 areas). Month-end values."""
+    s = {}
+    s["us_reserves"] = _fred("WRESBAL") / 1000          # $mn -> $bn
+    s["us_gdp"] = _fred("GDP")                          # $bn, quarterly
+    s["us_iorb"] = _fred("IORB").combine_first(_fred("IOER"))
+    s["us_effr"] = _fred("EFFR")
+    s["us_2y"] = _fred("DGS2")
+    s["us_nfci"] = _fred("NFCI")
+
+    px = pd.read_csv(CACHE / "sf_proxy.csv", parse_dates=["Date"]).set_index("Date")
+    s["us_proxy"] = px["Proxy funds rate"]
+
+    cpi = pd.read_csv(CACHE / "bis_cpi.csv")
+    cpi = cpi.pivot_table(index="TIME_PERIOD", columns="REF_AREA", values="OBS_VALUE")
+    cpi.index = pd.to_datetime(cpi.index)
+    for bis, pre in [("US", "us"), ("XM", "ea"), ("JP", "jp"), ("GB", "gb"), ("CA", "ca")]:
+        s[f"{pre}_cpi"] = cpi[bis]
+
+    ecb = pd.read_csv(CACHE / "ecb_2y.csv", usecols=["TIME_PERIOD", "OBS_VALUE"],
+                      parse_dates=["TIME_PERIOD"])
+    s["ea_2y"] = ecb.set_index("TIME_PERIOD")["OBS_VALUE"]
+
+    obs = json.loads((CACHE / "boc_2y.json").read_text())["observations"]
+    boc = pd.DataFrame({"date": o["d"], "v": float(o["BD.CDN.2YR.DQ.YLD"]["v"])}
+                       for o in obs if o.get("BD.CDN.2YR.DQ.YLD", {}).get("v"))
+    s["ca_2y"] = boc.set_index(pd.to_datetime(boc["date"]))["v"]
+
+    boe = pd.read_csv(CACHE / "boe_5y.csv")
+    boe["date"] = pd.to_datetime(boe["DATE"], format="%d %b %Y")
+    s["gb_2y"] = boe.set_index("date")["IUDSNPY"]  # 5y par: no 2y on IADB
+
+    jgb = pd.read_csv(CACHE / "mof_jgb.csv", skiprows=1, na_values=["-"])
+    jgb["date"] = pd.to_datetime(jgb["Date"], format="%Y/%m/%d")
+    s["jp_2y"] = jgb.set_index("date")["2Y"]
+
+    m = pd.DataFrame({k: v.resample("ME").last() for k, v in s.items()})
+    m["us_gdp"] = m["us_gdp"].ffill(limit=5)  # quarterly -> monthly
+    return m
+
+
 def load_policy_rates():
     df = pd.read_csv(CACHE / "bis_rates.csv")
     r = df.pivot_table(index="TIME_PERIOD", columns="REF_AREA", values="OBS_VALUE")
@@ -78,7 +126,7 @@ def load_fiscal():
 if __name__ == "__main__":
     bs = load_balance_sheets()
     rates = load_policy_rates()
-    cb = bs.join(rates, how="outer")
+    cb = bs.join(rates, how="outer").join(load_stance_inputs(), how="outer")
     cb.to_csv(OUT / "cb_monthly.csv")
 
     fiscal = load_fiscal()

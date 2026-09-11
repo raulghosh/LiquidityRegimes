@@ -56,8 +56,10 @@ panel["regime"] = panel.groupby("country", group_keys=False)["composite"].apply(
 
 st.title("G7 Liquidity Regimes")
 st.caption(
-    "Central bank balance-sheet + policy-rate momentum and fiscal impulse, "
-    "z-scored vs own 10y history. Sources: FRED, BoE, BoC, BIS, IMF WEO. "
+    "CB pillar = Quantity (balance sheet, reserves) + Stance (rate momentum, "
+    "real rate, 2y−policy, proxy funds rate); fiscal = impulse from CAPB. "
+    "All z-scored vs own 10y history. Sources: FRED, SF Fed, BoE, BoC, ECB, "
+    "MoF Japan, BIS, IMF WEO. "
     f"Latest data: {panel['date'].max().date()}"
 )
 
@@ -70,11 +72,12 @@ latest = (
 )
 st.subheader("Current snapshot")
 st.dataframe(
-    latest[["country", "date", "cb_score", "fiscal_score", "composite",
-            "cb_regime", "fiscal_regime", "regime"]]
+    latest[["country", "date", "quantity_score", "stance_score", "cb_score",
+            "fiscal_score", "composite", "cb_regime", "fiscal_regime", "regime"]]
     .style.map(color_regime, subset=["cb_regime", "fiscal_regime", "regime"])
-    .format({"cb_score": "{:.2f}", "fiscal_score": "{:.2f}",
-             "composite": "{:.2f}", "date": lambda d: d.date()}),
+    .format({c: "{:.2f}" for c in ["quantity_score", "stance_score", "cb_score",
+                                   "fiscal_score", "composite"]}
+            | {"date": lambda d: d.date()}),
     hide_index=True, use_container_width=True,
 )
 
@@ -87,9 +90,21 @@ st.pyplot(heatmap(panel, regime_col=col, title=""), use_container_width=True)
 st.subheader("Country detail")
 ctry = st.selectbox("Country", COUNTRY_ORDER)
 detail = panel[panel["country"] == ctry].set_index("date")
-c1, c2, c3 = st.columns(3)
 last = detail.dropna(subset=["composite"]).iloc[-1]
-c1.metric("CB regime", last["cb_regime"], f"{last['cb_score']:.2f}")
-c2.metric("Fiscal regime", last["fiscal_regime"], f"{last['fiscal_score']:.2f}")
-c3.metric("Composite", last["regime"], f"{last['composite']:.2f}")
-st.line_chart(detail[["cb_score", "fiscal_score", "composite"]])
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Quantity", f"{last['quantity_score']:.2f}", help="Balance sheet momentum (+ reserves/GDP for US)")
+c2.metric("Stance", f"{last['stance_score']:.2f}", help="Rate momentum, real rate, 2y-policy (+ proxy rate gap for US)")
+c3.metric("CB regime", last["cb_regime"], f"{last['cb_score']:.2f}")
+c4.metric("Fiscal regime", last["fiscal_regime"], f"{last['fiscal_score']:.2f}")
+c5.metric("Composite", last["regime"], f"{last['composite']:.2f}")
+st.line_chart(detail[["quantity_score", "stance_score", "fiscal_score", "composite"]])
+
+if ctry == "USA":
+    st.subheader("US plumbing overlays")
+    o1, o2 = st.columns(2)
+    o1.metric("Reserves", str(last["reserves_flag"]).title(),
+              f"EFFR−IORB {last['effr_iorb_bp']:+.0f}bp", delta_color="off",
+              help="EFFR at or above IORB signals scarce reserves (NY Fed / Fed Board indicators)")
+    o2.metric("Chicago Fed NFCI", f"{last['nfci']:.2f}", delta_color="off",
+              help="Negative = looser-than-average financial conditions")
+    st.line_chart(detail[["effr_iorb_bp"]].loc["2015":], height=200)
